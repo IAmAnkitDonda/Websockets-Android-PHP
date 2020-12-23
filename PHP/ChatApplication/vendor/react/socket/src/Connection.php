@@ -43,6 +43,17 @@ class Connection extends EventEmitter implements ConnectionInterface
 
     public function __construct($resource, LoopInterface $loop)
     {
+        // PHP < 7.3.3 (and PHP < 7.2.15) suffers from a bug where feof() might
+        // block with 100% CPU usage on fragmented TLS records.
+        // We try to work around this by always consuming the complete receive
+        // buffer at once to avoid stale data in TLS buffers. This is known to
+        // work around high CPU usage for well-behaving peers, but this may
+        // cause very large data chunks for high throughput scenarios. The buggy
+        // behavior can still be triggered due to network I/O buffers or
+        // malicious peers on affected versions, upgrading is highly recommended.
+        // @link https://bugs.php.net/bug.php?id=77390
+        $clearCompleteBuffer = \PHP_VERSION_ID < 70215 || (\PHP_VERSION_ID >= 70300 && \PHP_VERSION_ID < 70303);
+
         // PHP < 7.1.4 (and PHP < 7.0.18) suffers from a bug when writing big
         // chunks of data over TLS streams at once.
         // We try to work around this by limiting the write chunk size to 8192
@@ -53,14 +64,10 @@ class Connection extends EventEmitter implements ConnectionInterface
         // See https://github.com/reactphp/socket/issues/105
         $limitWriteChunks = (\PHP_VERSION_ID < 70018 || (\PHP_VERSION_ID >= 70100 && \PHP_VERSION_ID < 70104));
 
-        // Construct underlying stream to always consume complete receive buffer.
-        // This avoids stale data in TLS buffers and also works around possible
-        // buffering issues in legacy PHP versions. The buffer size is limited
-        // due to TCP/IP buffers anyway, so this should not affect usage otherwise.
         $this->input = new DuplexResourceStream(
             $resource,
             $loop,
-            -1,
+            $clearCompleteBuffer ? -1 : null,
             new WritableResourceStream($resource, $loop, null, $limitWriteChunks ? 8192 : null)
         );
 
@@ -131,12 +138,20 @@ class Connection extends EventEmitter implements ConnectionInterface
 
     public function getRemoteAddress()
     {
-        return $this->parseAddress(@\stream_socket_get_name($this->stream, true));
+        if (!\is_resource($this->stream)) {
+            return null;
+        }
+
+        return $this->parseAddress(\stream_socket_get_name($this->stream, true));
     }
 
     public function getLocalAddress()
     {
-        return $this->parseAddress(@\stream_socket_get_name($this->stream, false));
+        if (!\is_resource($this->stream)) {
+            return null;
+        }
+
+        return $this->parseAddress(\stream_socket_get_name($this->stream, false));
     }
 
     private function parseAddress($address)
@@ -149,13 +164,13 @@ class Connection extends EventEmitter implements ConnectionInterface
             // remove trailing colon from address for HHVM < 3.19: https://3v4l.org/5C1lo
             // note that technically ":" is a valid address, so keep this in place otherwise
             if (\substr($address, -1) === ':' && \defined('HHVM_VERSION_ID') && \HHVM_VERSION_ID < 31900) {
-                $address = (string)\substr($address, 0, -1);
+                $address = (string)\substr($address, 0, -1); // @codeCoverageIgnore
             }
 
             // work around unknown addresses should return null value: https://3v4l.org/5C1lo and https://bugs.php.net/bug.php?id=74556
             // PHP uses "\0" string and HHVM uses empty string (colon removed above)
             if ($address === '' || $address[0] === "\x00" ) {
-                return null;
+                return null; // @codeCoverageIgnore
             }
 
             return 'unix://' . $address;
@@ -164,8 +179,7 @@ class Connection extends EventEmitter implements ConnectionInterface
         // check if this is an IPv6 address which includes multiple colons but no square brackets
         $pos = \strrpos($address, ':');
         if ($pos !== false && \strpos($address, ':') < $pos && \substr($address, 0, 1) !== '[') {
-            $port = \substr($address, $pos + 1);
-            $address = '[' . \substr($address, 0, $pos) . ']:' . $port;
+            $address = '[' . \substr($address, 0, $pos) . ']:' . \substr($address, $pos + 1); // @codeCoverageIgnore
         }
 
         return ($this->encryptionEnabled ? 'tls' : 'tcp') . '://' . $address;

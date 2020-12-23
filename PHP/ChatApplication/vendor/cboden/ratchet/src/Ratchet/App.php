@@ -11,6 +11,7 @@ use Ratchet\Server\IoServer;
 use Ratchet\Server\FlashPolicy;
 use Ratchet\Http\HttpServer;
 use Ratchet\Http\Router;
+use Ratchet\WebSocket\MessageComponentInterface as WsMessageComponentInterface;
 use Ratchet\WebSocket\WsServer;
 use Ratchet\Wamp\WampServer;
 use Symfony\Component\Routing\RouteCollection;
@@ -62,7 +63,7 @@ class App {
      * @param LoopInterface $loop       Specific React\EventLoop to bind the application to. null will create one for you.
      */
     public function __construct($httpHost = 'localhost', $port = 8080, $address = '127.0.0.1', LoopInterface $loop = null) {
-        if (extension_loaded('xdebug')) {
+        if (extension_loaded('xdebug') && getenv('RATCHET_DISABLE_XDEBUG_WARN') === false) {
             trigger_error('XDebug extension detected. Remember to disable this if performance testing or going live!', E_USER_WARNING);
         }
 
@@ -105,7 +106,7 @@ class App {
         } elseif ($controller instanceof WampServerInterface) {
             $decorated = new WsServer(new WampServer($controller));
             $decorated->enableKeepAlive($this->_server->loop);
-        } elseif ($controller instanceof MessageComponentInterface) {
+        } elseif ($controller instanceof MessageComponentInterface || $controller instanceof WsMessageComponentInterface) {
             $decorated = new WsServer($controller);
             $decorated->enableKeepAlive($this->_server->loop);
         } else {
